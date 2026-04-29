@@ -63,9 +63,7 @@ class Game(Base):
     pairs: Mapped[list["GamePair"]] = relationship(
         back_populates="game",
         cascade="all, delete-orphan",
-        order_by="GamePair.sort_order",
     )
-    answers: Mapped[list["GameAnswer"]] = relationship(back_populates="game", cascade="all, delete-orphan")
 
 
 class GamePair(Base):
@@ -73,12 +71,11 @@ class GamePair(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     game_id: Mapped[str] = mapped_column(String(36), ForeignKey("games.id"), nullable=False, index=True)
-    right_option_id: Mapped[str] = mapped_column(String(36), default=new_id, nullable=False, unique=True, index=True)
+    right_option_id: Mapped[str] = mapped_column(String(36), default=new_id, nullable=False, index=True)
     left_text: Mapped[str] = mapped_column(String(200), nullable=False)
     right_text: Mapped[str] = mapped_column(String(200), nullable=False)
     explanation: Mapped[str] = mapped_column(Text, nullable=False)
     pair_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
 
     game: Mapped[Game] = relationship(back_populates="pairs")
 
@@ -93,5 +90,3 @@ class GameAnswer(Base):
     selected_right_text: Mapped[str] = mapped_column(String(200), nullable=False)
     is_correct: Mapped[bool] = mapped_column(Boolean, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-
-    game: Mapped[Game] = relationship(back_populates="answers")

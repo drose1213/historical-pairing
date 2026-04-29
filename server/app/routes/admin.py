@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, joinedload
 
 from ..auth.deps import get_current_admin_user
 from ..database import get_db
@@ -65,10 +65,8 @@ def get_stats(
 ) -> AdminStatsResponse:
     from datetime import datetime, timedelta, timezone
 
-    # Total users
     total_users = db.query(User).count()
 
-    # Active users (played in last 7 days)
     seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
     active_users_7d = (
         db.query(Game.user_id)
@@ -77,22 +75,25 @@ def get_stats(
         .count()
     )
 
-    # Total games
     total_games = db.query(Game).count()
 
-    # Average correct rate
-    completed_games = db.query(Game).filter(Game.score.isnot(None)).all()
-    if completed_games:
-        avg_correct_rate = sum(g.score or 0 for g in completed_games) / sum(g.total for g in completed_games)
+    # Average correct rate - single query with aggregation
+    stats = db.query(
+        func.sum(Game.score).label("total_score"),
+        func.sum(Game.total).label("total_total"),
+    ).filter(Game.score.isnot(None)).first()
+
+    if stats and stats.total_total:
+        avg_correct_rate = stats.total_score / stats.total_total
     else:
         avg_correct_rate = 0.0
 
-    # Average time used
-    games_with_time = db.query(Game).filter(Game.time_used.isnot(None)).all()
-    if games_with_time:
-        avg_time_used = sum(g.time_used or 0 for g in games_with_time) / len(games_with_time)
-    else:
-        avg_time_used = None
+    # Average time used - single query
+    time_stats = db.query(
+        func.avg(Game.time_used).label("avg_time"),
+    ).filter(Game.time_used.isnot(None)).first()
+
+    avg_time_used = time_stats.avg_time if time_stats.avg_time else None
 
     return AdminStatsResponse(
         total_users=total_users,
@@ -112,28 +113,45 @@ def list_users(
 ) -> UserListResponse:
     total = db.query(User).count()
 
-    users = db.query(User).order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    # Subquery: count games per user
+    game_count_subq = (
+        select(Game.user_id, func.count(Game.id).label("game_count"))
+        .group_by(Game.user_id)
+        .subquery()
+    )
 
-    items = []
-    for user in users:
-        last_game = (
-            db.query(Game)
-            .filter(Game.user_id == user.id)
-            .order_by(Game.created_at.desc())
-            .first()
-        )
-        total_games = db.query(Game).filter(Game.user_id == user.id).count()
+    # Subquery: latest game timestamp per user
+    last_game_subq = (
+        select(Game.user_id, func.max(Game.created_at).label("last_game_at"))
+        .group_by(Game.user_id)
+        .subquery()
+    )
 
-        items.append(
-            UserListItem(
-                id=user.id,
-                email=user.email,
-                is_admin=user.is_admin,
-                created_at=user.created_at.isoformat() if user.created_at else "",
-                total_games=total_games,
-                last_game_at=last_game.created_at.isoformat() if last_game and last_game.created_at else None,
-            )
+    users = (
+        db.query(
+            User,
+            func.coalesce(game_count_subq.c.game_count, 0).label("total_games"),
+            last_game_subq.c.last_game_at.label("last_game_at"),
         )
+        .outerjoin(game_count_subq, User.id == game_count_subq.c.user_id)
+        .outerjoin(last_game_subq, User.id == last_game_subq.c.user_id)
+        .order_by(User.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    items = [
+        UserListItem(
+            id=user.id,
+            email=user.email,
+            is_admin=user.is_admin,
+            created_at=user.created_at.isoformat() if user.created_at else "",
+            total_games=total_games,
+            last_game_at=last_game_at.isoformat() if last_game_at else None,
+        )
+        for user, total_games, last_game_at in users
+    ]
 
     return UserListResponse(items=items, total=total, page=page, page_size=page_size)
 
@@ -147,28 +165,28 @@ def list_games(
 ) -> GameListResponse:
     total = db.query(Game).count()
 
-    games = db.query(Game).order_by(Game.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    games = (
+        db.query(Game)
+        .options(joinedload(Game.user))
+        .order_by(Game.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
 
-    items = []
-    for game in games:
-        user_email = None
-        if game.user_id:
-            user = db.get(User, game.user_id)
-            if user:
-                user_email = user.email
-
-        items.append(
-            GameListItem(
-                id=game.id,
-                user_email=user_email,
-                keyword=game.keyword,
-                score=game.score,
-                total=game.total,
-                time_used=game.time_used,
-                status=game.status,
-                created_at=game.created_at.isoformat() if game.created_at else "",
-            )
+    items = [
+        GameListItem(
+            id=game.id,
+            user_email=game.user.email if game.user else None,
+            keyword=game.keyword,
+            score=game.score,
+            total=game.total,
+            time_used=game.time_used,
+            status=game.status,
+            created_at=game.created_at.isoformat() if game.created_at else "",
         )
+        for game in games
+    ]
 
     return GameListResponse(items=items, total=total, page=page, page_size=page_size)
 

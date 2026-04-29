@@ -1,5 +1,7 @@
+import os
 from urllib.parse import quote
 
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +25,16 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "your-secret-key-change-in-production"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7  # 7 days
+
+    @model_validator(mode="after")
+    def check_jwt_secret(self) -> "Settings":
+        if self.jwt_secret_key == "your-secret-key-change-in-production":
+            if os.getenv("JWI_SKIP_SECRET_CHECK") is None:
+                raise ValueError(
+                    "jwt_secret_key must be set via JWI_SKIP_SECRET_CHECK=1 env var to bypass, "
+                    "or set a proper secret in .env (JWT_SECRET_KEY=...)"
+                )
+        return self
 
     @property
     def database_url(self) -> str:

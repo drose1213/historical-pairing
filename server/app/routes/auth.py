@@ -72,8 +72,8 @@ def send_code(request: SendCodeRequest, db: Session = Depends(get_db)) -> SendCo
     )
 
     if recent:
-        elapsed = (recent.expires_at - datetime.now(timezone.utc)).total_seconds()
-        if elapsed > 540:  # More than 60 seconds from original 10 min expiry
+        elapsed = (datetime.now(timezone.utc) - recent.created_at).total_seconds()
+        if elapsed < 60:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="验证码已发送，请稍后再试",

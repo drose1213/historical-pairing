@@ -5,7 +5,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from .auth.deps import get_current_user_optional
+from .auth.deps import get_current_user, get_current_user_optional
 from .config import settings
 from .database import get_db, init_db, engine
 from .generator import generate_pairs, shuffle_items
@@ -109,14 +109,13 @@ async def create_game(
     logger.info("Game created: id=%s, keyword=%s", game.id, keyword)
 
     pairs: list[GamePair] = []
-    for index, pair in enumerate(generated):
+    for pair in generated:
         game_pair = GamePair(
             game_id=game.id,
             left_text=pair.left,
             right_text=pair.right,
             explanation=pair.explanation,
             pair_type=pair.type,
-            sort_order=index,
         )
         db.add(game_pair)
         pairs.append(game_pair)
@@ -141,11 +140,14 @@ def submit_game(
     game_id: str,
     payload: SubmitRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> SubmitResponse:
     logger.info("Submitting game: id=%s, match_count=%d", game_id, len(payload.matches))
     game = db.get(Game, game_id)
     if game is None:
         raise HTTPException(status_code=404, detail="游戏不存在")
+    if game.user_id is not None and game.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="无权提交该游戏")
     if game.status == "submitted":
         raise HTTPException(status_code=409, detail="游戏已提交，请勿重复提交")
 

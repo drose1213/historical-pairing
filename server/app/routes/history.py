@@ -92,7 +92,7 @@ def get_history_detail(
         raise HTTPException(status_code=404, detail="游戏不存在")
 
     pairs = {pair.id: pair for pair in game.pairs}
-    answers = {answer.pair_id: answer for answer in game.answers}
+    answers = {a.pair_id: a for a in db.query(GameAnswer).filter(GameAnswer.game_id == game_id).all()}
 
     results = []
     for pair in game.pairs:
