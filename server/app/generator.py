@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-PROMPT = """你是一个严谨的历史知识出题助手。
+PROMPT = """你是一个严谨的历史知识学家以及出题小能手。
 
 请根据用户输入的关键词生成 4 组历史配对题。
 
@@ -98,7 +98,10 @@ def _dedupe_and_validate(pairs: list[GeneratedPair]) -> list[GeneratedPair]:
     for pair in pairs:
         left = pair.left.strip()
         right = pair.right.strip()
-        if not left or not right or left in seen_left or right in seen_right:
+        if not left or not right:
+            continue
+        # Deduplicate: skip if this left or this right was already used
+        if left in seen_left or right in seen_right:
             continue
         seen_left.add(left)
         seen_right.add(right)
@@ -111,9 +114,9 @@ def _dedupe_and_validate(pairs: list[GeneratedPair]) -> list[GeneratedPair]:
             )
         )
 
-    if len(cleaned) != 4:
-        raise ValueError("generated pairs must contain exactly 4 unique pairs")
-    return cleaned
+    if len(cleaned) < 4:
+        raise ValueError(f"generated pairs must contain at least 4 unique pairs, got {len(cleaned)}")
+    return cleaned[:4]
 
 
 def _extract_json_payload(content: str) -> dict:
@@ -128,14 +131,20 @@ def _extract_json_payload(content: str) -> dict:
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned).strip()
 
+    decoder = json.JSONDecoder()
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise
-        return json.loads(cleaned[start : end + 1])
+    except json.JSONDecodeError as original_exc:
+        # Some compatible providers wrap JSON with prose. Scan for the first
+        # complete JSON object instead of only trimming to the last brace.
+        for match in re.finditer(r"\{", cleaned):
+            try:
+                payload, _ = decoder.raw_decode(cleaned[match.start() :])
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                continue
+        raise original_exc
 
 
 async def generate_pairs(
@@ -153,33 +162,55 @@ async def generate_pairs(
     if effective_base_url:
         client_kwargs["base_url"] = effective_base_url
     client = AsyncOpenAI(**client_kwargs)
-    try:
-        request_kwargs = {
-            "model": model or settings.openai_model,
-            "messages": [
-                {"role": "system", "content": "你只输出符合要求的 JSON。"},
-                {"role": "user", "content": PROMPT.format(keyword=keyword.strip())},
-            ],
-            "temperature": 0.4,
-            "timeout": 30,
-        }
-        # Only add response_format for OpenAI, not for compatible APIs like MiniMax
-        if not effective_base_url or effective_base_url.lower().rstrip("/") == "https://api.openai.com/v1":
-            request_kwargs["response_format"] = {"type": "json_object"}
 
-        response = await client.chat.completions.create(**request_kwargs)
-    except Exception as exc:
-        logger.exception("API call failed: %s", type(exc).__name__)
-        raise HTTPException(status_code=502, detail=f"API 调用失败: {type(exc).__name__}: {exc}") from exc
+    for attempt in range(3):
+        try:
+            request_kwargs = {
+                "model": model or settings.openai_model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你只输出严格 JSON。所有字符串必须使用双引号并正确转义，"
+                            "不要输出 Markdown、注释、尾随逗号或额外说明。"
+                        ),
+                    },
+                    {"role": "user", "content": PROMPT.format(keyword=keyword.strip())},
+                ],
+                "temperature": 0.4 + attempt * 0.1,
+                "timeout": 30,
+            }
+            if not effective_base_url or effective_base_url.lower().rstrip("/") == "https://api.openai.com/v1":
+                request_kwargs["response_format"] = {"type": "json_object"}
 
-    content = response.choices[0].message.content or ""
-    try:
-        payload = _extract_json_payload(content)
-        parsed = GeneratedPairs.model_validate(payload)
-        return _dedupe_and_validate(parsed.pairs)
-    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
-        logger.exception("Parse failed: %s", exc)
-        raise HTTPException(status_code=502, detail=f"题目生成失败：{exc}") from exc
+            response = await client.chat.completions.create(**request_kwargs)
+        except Exception as exc:
+            logger.exception("API call failed: %s", type(exc).__name__)
+            raise HTTPException(status_code=502, detail=f"API 调用失败: {type(exc).__name__}: {exc}") from exc
+
+        content = response.choices[0].message.content or ""
+        logger.info("Raw LLM response: %s", content[:2000])
+        try:
+            payload = _extract_json_payload(content)
+            parsed = GeneratedPairs.model_validate(payload)
+            logger.info("Parsed pairs count before dedupe: %d", len(parsed.pairs))
+            return _dedupe_and_validate(parsed.pairs)
+        except ValueError as exc:
+            if attempt < 2:
+                logger.warning("Generated payload was invalid (attempt %d), retrying: %s", attempt + 1, exc)
+                continue
+            logger.exception("Parse failed: %s", exc)
+            logger.warning("Falling back to local pairs after invalid generated payload")
+            return _fallback_pairs(keyword)
+        except (json.JSONDecodeError, ValidationError) as exc:
+            if attempt < 2:
+                logger.warning("Generated JSON could not be parsed (attempt %d), retrying: %s", attempt + 1, exc)
+                continue
+            logger.exception("Parse failed: %s", exc)
+            logger.warning("Falling back to local pairs after generated JSON parse failure")
+            return _fallback_pairs(keyword)
+
+    raise HTTPException(status_code=502, detail="题目生成失败，请稍后重试")
 
 
 def shuffle_items(items: list[T]) -> list[T]:

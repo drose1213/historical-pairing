@@ -66,14 +66,10 @@ onUnmounted(() => {
 
 <template>
   <div class="countdown-timer" :class="colorClass">
+    <div class="timer-glow"></div>
     <div class="timer-ring">
       <svg viewBox="0 0 100 100">
-        <circle
-          class="timer-bg"
-          cx="50"
-          cy="50"
-          r="45"
-        />
+        <circle class="timer-bg" cx="50" cy="50" r="45" />
         <circle
           class="timer-progress"
           cx="50"
@@ -83,26 +79,60 @@ onUnmounted(() => {
           :stroke-dashoffset="283 * (1 - progress)"
         />
       </svg>
-      <div class="timer-text">{{ displaySeconds }}</div>
+      <div class="timer-text">
+        <span class="timer-number">{{ displaySeconds }}</span>
+        <span class="timer-label">秒</span>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
 .countdown-timer {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
+.timer-glow {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  pointer-events: none;
+  transition: background 0.3s;
+}
+
+.normal .timer-glow {
+  background: rgba(34, 197, 94, 0.12);
+  box-shadow: 0 0 20px rgba(34, 197, 94, 0.2);
+}
+
+.warning .timer-glow {
+  background: rgba(245, 158, 11, 0.15);
+  box-shadow: 0 0 24px rgba(245, 158, 11, 0.3);
+}
+
+.danger .timer-glow {
+  background: rgba(239, 68, 68, 0.2);
+  box-shadow: 0 0 28px rgba(239, 68, 68, 0.4);
+  animation: pulse-danger 0.5s ease-in-out infinite alternate;
+}
+
+@keyframes pulse-danger {
+  from { transform: scale(1); }
+  to   { transform: scale(1.08); }
+}
+
 .timer-ring {
   position: relative;
-  width: 80px;
-  height: 80px;
+  width: 96px;
+  height: 96px;
 }
 
 .timer-ring svg {
   transform: rotate(-90deg);
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
 }
 
 .timer-bg {
@@ -116,7 +146,8 @@ onUnmounted(() => {
   stroke: #22c55e;
   stroke-width: 8;
   stroke-linecap: round;
-  transition: stroke-dashoffset 0.3s ease;
+  transition: stroke-dashoffset 0.3s ease, stroke 0.5s ease;
+  filter: drop-shadow(0 0 3px currentColor);
 }
 
 .normal .timer-progress {
@@ -135,22 +166,36 @@ onUnmounted(() => {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  font-size: 28px;
-  font-weight: 800;
-  color: #1a1a1a;
+  gap: 1px;
 }
 
-.normal .timer-text {
-  color: #22c55e;
+.timer-number {
+  font-size: 36px;
+  font-weight: 900;
+  line-height: 1;
+  transition: color 0.5s ease;
 }
 
-.warning .timer-text {
-  color: #f59e0b;
+.timer-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  opacity: 0.7;
 }
 
-.danger .timer-text {
-  color: #ef4444;
+.normal .timer-number { color: #16a34a; }
+.warning .timer-number { color: #d97706; }
+.danger  .timer-number { color: #dc2626; animation: shake 0.4s ease-in-out infinite alternate; }
+
+@keyframes shake {
+  from { transform: translateX(0); }
+  to   { transform: translateX(2px); }
 }
+
+.normal .timer-label { color: #16a34a; }
+.warning .timer-label { color: #d97706; }
+.danger  .timer-label { color: #dc2626; }
 </style>

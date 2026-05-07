@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -52,6 +52,7 @@ class Game(Base):
     user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     keyword: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    final_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     total: Mapped[int] = mapped_column(Integer, default=4)
     status: Mapped[str] = mapped_column(String(20), default="created", index=True)
     time_used: Mapped[int | None] = mapped_column(Integer, nullable=True)

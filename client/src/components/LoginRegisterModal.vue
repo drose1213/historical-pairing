@@ -2,6 +2,7 @@
 import { ref, computed } from "vue";
 import { X, Mail, Lock, Eye, EyeOff } from "lucide-vue-next";
 import { useAuthStore } from "../stores/auth";
+import CaptchaChallenge from "./CaptchaChallenge.vue";
 
 const emit = defineEmits<{
   close: [];
@@ -19,16 +20,42 @@ const loading = ref(false);
 const sendingCode = ref(false);
 const cooldown = ref(0);
 const error = ref("");
+const captchaVerified = ref(false);
+const captchaToken = ref("");
+const captchaAnswer = ref("");
+const showCaptcha = ref(false);
 
 const isRegister = computed(() => mode.value === "register");
 
+function onCaptchaVerified(token: string, answer: string) {
+  captchaVerified.value = true;
+  captchaToken.value = token;
+  captchaAnswer.value = answer;
+  showCaptcha.value = false;
+  doSendCode();
+}
+
 async function sendCode() {
+  if (cooldown.value > 0) return;
+
+  if (!email.value.trim()) {
+    error.value = "请先输入邮箱地址";
+    return;
+  }
+
+  captchaVerified.value = false;
+  captchaToken.value = "";
+  captchaAnswer.value = "";
+  showCaptcha.value = true;
+}
+
+async function doSendCode() {
   if (cooldown.value > 0) return;
 
   sendingCode.value = true;
   error.value = "";
   try {
-    await authStore.sendCode(email.value);
+    await authStore.sendCode(email.value, captchaToken.value, captchaAnswer.value);
     cooldown.value = 60;
     const timer = setInterval(() => {
       cooldown.value--;
@@ -38,6 +65,8 @@ async function sendCode() {
     }, 1000);
   } catch (err) {
     error.value = err instanceof Error ? err.message : "发送失败";
+    showCaptcha.value = true;
+    captchaVerified.value = false;
   } finally {
     sendingCode.value = false;
   }
@@ -107,6 +136,11 @@ function switchMode() {
             {{ cooldown > 0 ? `${cooldown}秒` : "发送验证码" }}
           </button>
         </div>
+
+        <CaptchaChallenge
+          v-if="showCaptcha && isRegister"
+          @verified="onCaptchaVerified"
+        />
 
         <div class="input-group">
           <Lock :size="18" class="input-icon" />

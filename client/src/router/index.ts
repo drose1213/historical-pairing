@@ -27,6 +27,11 @@ const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: "/leaderboard",
+      name: "leaderboard",
+      component: () => import("../pages/LeaderboardPage.vue"),
+    },
+    {
       path: "/admin",
       name: "admin",
       component: () => import("../pages/AdminDashboardPage.vue"),

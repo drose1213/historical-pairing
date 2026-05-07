@@ -1,6 +1,9 @@
+import logging
 import random
+import smtplib
 import string
 from datetime import datetime, timedelta, timezone
+from email.mime.text import MIMEText
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr, Field
@@ -9,19 +12,31 @@ from sqlalchemy.orm import Session
 from ..auth.deps import get_current_user
 from ..auth.hash import hash_password, verify_password
 from ..auth.jwt import create_access_token
+from ..captcha import generate_captcha, verify_captcha
+from ..config import settings
 from ..database import get_db
 from ..models import User, VerificationCode
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 class SendCodeRequest(BaseModel):
     email: EmailStr
+    captcha_token: str
+    captcha_answer: str
 
 
 class SendCodeResponse(BaseModel):
     message: str
     expires_in: int = 600  # 10 minutes
+
+
+class CaptchaResponse(BaseModel):
+    token: str
+    question: str
+    expires_in: int = 300
 
 
 class RegisterRequest(BaseModel):
@@ -52,13 +67,62 @@ def _generate_code() -> str:
 
 
 def _send_email(email: str, code: str) -> None:
-    # TODO: Implement actual email sending
-    # For now, just print to console
-    print(f"[EMAIL] To: {email}, Code: {code}")
+    """发送验证码邮件。SMTP 未配置时降级为控制台输出。"""
+    if not settings.smtp_host or not settings.smtp_user or not settings.smtp_password:
+        print(f"[EMAIL-FALLBACK] To: {email}, Code: {code}")
+        return
+
+    sender = settings.smtp_from or settings.smtp_user
+    subject = "历史配对 - 邮箱验证码"
+    html_body = f"""
+    <div style="max-width:480px;margin:0 auto;font-family:'Microsoft YaHei',sans-serif;color:#1a1a1a;">
+      <div style="background:#246b55;padding:24px 32px;border-radius:12px 12px 0 0;text-align:center;">
+        <h2 style="color:#fff;margin:0;font-size:22px;">历史配对</h2>
+        <p style="color:rgba(255,255,255,0.8);margin:8px 0 0;font-size:13px;">邮箱验证码</p>
+      </div>
+      <div style="background:#fff;padding:32px;border:1px solid #e8dcc8;border-top:none;border-radius:0 0 12px 12px;">
+        <p style="font-size:15px;line-height:1.6;margin:0 0 20px;">您好，您正在进行历史配对账号注册，验证码如下：</p>
+        <div style="background:#f4f1ea;border:2px dashed #d4c9b0;border-radius:8px;padding:20px;text-align:center;margin:0 0 20px;">
+          <span style="font-size:32px;font-weight:800;color:#246b55;letter-spacing:8px;">{code}</span>
+        </div>
+        <p style="font-size:13px;color:#6b7280;line-height:1.6;margin:0;">验证码 10 分钟内有效，请勿泄露给他人。如非本人操作，请忽略此邮件。</p>
+      </div>
+    </div>
+    """
+
+    msg = MIMEText(html_body, "html", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = email
+
+    try:
+        if settings.smtp_tls:
+            with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port) as server:
+                server.login(settings.smtp_user, settings.smtp_password)
+                server.sendmail(sender, [email], msg.as_string())
+        else:
+            with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
+                server.starttls()
+                server.login(settings.smtp_user, settings.smtp_password)
+                server.sendmail(sender, [email], msg.as_string())
+        logger.info("验证码邮件已发送至 %s", email)
+    except Exception:
+        logger.exception("发送邮件失败: %s", email)
+
+
+@router.get("/captcha", response_model=CaptchaResponse)
+def get_captcha() -> CaptchaResponse:
+    token, question = generate_captcha()
+    return CaptchaResponse(token=token, question=question)
 
 
 @router.post("/send-code", response_model=SendCodeResponse)
 def send_code(request: SendCodeRequest, db: Session = Depends(get_db)) -> SendCodeResponse:
+    if not verify_captcha(request.captcha_token, request.captcha_answer):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="验证码答案错误，请重新获取",
+        )
     # Check if there's a recent code that hasn't expired (60 second cooldown)
     recent = (
         db.query(VerificationCode)

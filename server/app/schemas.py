@@ -34,7 +34,9 @@ class MatchInput(BaseModel):
 
 
 class SubmitRequest(BaseModel):
-    matches: list[MatchInput] = Field(min_length=4, max_length=4)
+    matches: list[MatchInput] = Field(min_length=0, max_length=4)
+    time_used: int | None = None
+    time_up: bool = False
 
     @model_validator(mode="after")
     def validate_unique_matches(self) -> "SubmitRequest":
@@ -59,6 +61,8 @@ class ResultItem(BaseModel):
 
 class SubmitResponse(BaseModel):
     score: int
+    final_score: float
+    correct_count: int
     total: int
     results: list[ResultItem]
 

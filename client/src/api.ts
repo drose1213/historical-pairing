@@ -30,6 +30,8 @@ export type CreateGameResponse = {
 
 export type SubmitResponse = {
   score: number;
+  final_score: number;
+  correct_count: number;
   total: number;
   results: Array<{
     leftId: string;
@@ -63,11 +65,29 @@ interface AuthResponse {
   user: User;
 }
 
-export async function sendCode(email: string): Promise<void> {
+export interface CaptchaData {
+  token: string;
+  question: string;
+  expires_in: number;
+}
+
+export async function getCaptcha(): Promise<CaptchaData> {
+  const response = await fetch("/api/auth/captcha");
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return response.json();
+}
+
+export async function sendCode(
+  email: string,
+  captchaToken: string,
+  captchaAnswer: string
+): Promise<void> {
   const response = await fetch("/api/auth/send-code", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, captcha_token: captchaToken, captcha_answer: captchaAnswer }),
   });
   if (!response.ok) {
     throw new Error(await parseError(response));
@@ -128,13 +148,47 @@ export async function createGame(keyword: string): Promise<CreateGameResponse> {
 
 export async function submitGame(
   gameId: string,
-  matches: Array<{ leftId: string; rightId: string }>
+  matches: Array<{ leftId: string; rightId: string }>,
+  timeUsed?: number,
+  timeUp?: boolean
 ): Promise<SubmitResponse> {
   const response = await fetch(`/api/games/${gameId}/submit`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ matches }),
+    body: JSON.stringify({ matches, time_used: timeUsed ?? null, time_up: timeUp ?? false }),
   });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return response.json();
+}
+
+// ============ Leaderboard ============
+
+export interface LeaderboardItem {
+  rank: number;
+  email: string;
+  total_games: number;
+  avg_score: number;
+  best_score: number;
+  total_correct: number;
+}
+
+export interface LeaderboardResponse {
+  items: LeaderboardItem[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export async function getLeaderboard(
+  page: number = 1,
+  pageSize: number = 10,
+  sortBy: "avg_score" | "total_games" | "best_score" | "total_correct" = "avg_score",
+  sortOrder: "asc" | "desc" = "desc"
+): Promise<LeaderboardResponse> {
+  const url = `/api/leaderboard?page=${page}&page_size=${pageSize}&sort_by=${sortBy}&sort_order=${sortOrder}`;
+  const response = await fetch(url);
   if (!response.ok) {
     throw new Error(await parseError(response));
   }
@@ -195,6 +249,56 @@ export async function getHistory(
 
 export async function getHistoryDetail(gameId: string): Promise<HistoryDetailResponse> {
   const response = await fetch(`/api/history/${gameId}`, {
+    headers: { ...authHeaders() },
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return response.json();
+}
+
+export interface PeriodStats {
+  keyword: string;
+  count: number;
+  avg_score: number;
+}
+
+export interface PairTypeStats {
+  pair_type: string;
+  total: number;
+  correct: number;
+  correct_rate: number;
+}
+
+export interface UserStatsResponse {
+  total_games: number;
+  avg_score: number;
+  min_score: number;
+  max_score: number;
+  avg_time: number | null;
+  min_time: number | null;
+  max_time: number | null;
+  periods: PeriodStats[];
+  pair_types: PairTypeStats[];
+  tendency: string;
+}
+
+export async function getUserStats(): Promise<UserStatsResponse> {
+  const response = await fetch("/api/history/stats", {
+    headers: { ...authHeaders() },
+  });
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+  return response.json();
+}
+
+export interface RecentKeywordsResponse {
+  keywords: string[];
+}
+
+export async function getRecentKeywords(): Promise<RecentKeywordsResponse> {
+  const response = await fetch("/api/history/recent-keywords", {
     headers: { ...authHeaders() },
   });
   if (!response.ok) {

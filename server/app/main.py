@@ -10,7 +10,7 @@ from .config import settings
 from .database import get_db, init_db, engine
 from .generator import generate_pairs, shuffle_items
 from .models import Game, GameAnswer, GamePair, SystemConfig, User
-from .routes import admin, analytics, auth, history
+from .routes import admin, analytics, auth, history, leaderboard
 from .schemas import (
     CONFIG_KEY_OPENAI_API_KEY,
     CONFIG_KEY_OPENAI_BASE_URL,
@@ -68,6 +68,7 @@ app.include_router(auth.router)
 app.include_router(history.router)
 app.include_router(admin.router)
 app.include_router(analytics.router)
+app.include_router(leaderboard.router)
 
 
 @app.on_event("startup")
@@ -158,7 +159,7 @@ def submit_game(
     expected_right_ids = set(right_text_by_id)
     submitted_left_ids = {match.leftId for match in payload.matches}
     submitted_right_ids = {match.rightId for match in payload.matches}
-    if submitted_left_ids != expected_left_ids or submitted_right_ids != expected_right_ids:
+    if not payload.time_up and (submitted_left_ids != expected_left_ids or submitted_right_ids != expected_right_ids):
         raise HTTPException(status_code=422, detail="提交答案与当前游戏题目不匹配")
     submitted = {match.leftId: match.rightId for match in payload.matches}
 
@@ -199,9 +200,24 @@ def submit_game(
     game.score = score
     game.status = "submitted"
     game.submitted_at = datetime.now(timezone.utc)
+    if payload.time_used is not None:
+        game.time_used = payload.time_used
     db.commit()
 
-    return SubmitResponse(score=score, total=game.total, results=results)
+    time_used = payload.time_used or 0
+    correct_count = score
+    remaining = max(0, 30 - time_used)
+    final_score = remaining * correct_count * 0.4 + 100 * correct_count * 0.6
+    game.final_score = round(final_score, 1)
+    db.commit()
+
+    return SubmitResponse(
+        score=score,
+        final_score=round(final_score, 1),
+        correct_count=correct_count,
+        total=game.total,
+        results=results,
+    )
 
 
 @app.get("/api/configs", response_model=list[ConfigItem])

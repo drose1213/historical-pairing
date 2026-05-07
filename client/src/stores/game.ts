@@ -17,9 +17,9 @@ export const useGameStore = defineStore("game", () => {
     return game;
   }
 
-  async function submitGame(matches: Array<{ leftId: string; rightId: string }>, time: number) {
+  async function submitGame(matches: Array<{ leftId: string; rightId: string }>, time: number, timeUp = false) {
     if (!gameId.value) throw new Error("No game in progress");
-    const result = await api.submitGame(gameId.value, matches);
+    const result = await api.submitGame(gameId.value, matches, time, timeUp);
     results.value = result;
     timeUsed.value = time;
     return result;

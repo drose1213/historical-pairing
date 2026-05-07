@@ -70,14 +70,12 @@ function removeMatch(leftId: string) {
   matches.value = next;
 }
 
-async function submit() {
-  if (!canSubmit.value) return;
-
+async function submit(timeUp = false) {
   const matchList = Object.entries(matches.value).map(([leftId, rightId]) => ({ leftId, rightId }));
-  const result = await gameStore.submitGame(matchList, timeUsed.value);
+  const result = await gameStore.submitGame(matchList, timeUsed.value, timeUp);
 
   await trackEvent("game_session_end", gameId.value, {
-    trigger: "user_submit",
+    trigger: timeUp ? "time_up" : "user_submit",
     time_used: timeUsed.value,
     correct_count: result.score,
     total_count: result.total,
@@ -87,7 +85,7 @@ async function submit() {
 }
 
 function onTimeUp() {
-  submit();
+  submit(true);
 }
 
 function onTimeUpdate(seconds: number) {
@@ -110,13 +108,16 @@ onMounted(async () => {
         <p class="keyword">{{ game?.keyword }}</p>
         <p class="progress">{{ matchedCount }}/4 已配对</p>
       </div>
+    </header>
+
+    <div class="timer-center">
       <CountdownTimer
         :key="timerKey"
         :initial-seconds="30"
         @time-up="onTimeUp"
         @time-update="onTimeUpdate"
       />
-    </header>
+    </div>
 
     <section class="game-layout">
       <div class="column">
@@ -158,7 +159,7 @@ onMounted(async () => {
     </section>
 
     <section class="action-band">
-      <button class="submit-button" :disabled="!canSubmit" @click="submit">
+      <button class="submit-button" :disabled="!canSubmit" @click="submit(false)">
         <Send :size="18" />
         <span>提交答案</span>
       </button>
@@ -177,13 +178,19 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 20px 0;
+  padding: 16px 0;
   border-bottom: 1px solid rgba(0, 0, 0, 0.1);
 }
 
+.timer-center {
+  display: flex;
+  justify-content: center;
+  padding: 24px 0 8px;
+}
+
 .keyword {
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 20px;
+  font-weight: 800;
   color: #1a1a1a;
   margin: 0;
 }
@@ -192,6 +199,7 @@ onMounted(async () => {
   font-size: 14px;
   color: #6b7280;
   margin: 4px 0 0;
+  font-weight: 600;
 }
 
 .game-layout {

@@ -39,8 +39,8 @@ export const useAuthStore = defineStore("auth", () => {
     localStorage.setItem("token", response.access_token);
   }
 
-  async function sendCode(email: string) {
-    await api.sendCode(email);
+  async function sendCode(email: string, captchaToken: string, captchaAnswer: string) {
+    await api.sendCode(email, captchaToken, captchaAnswer);
   }
 
   function logout() {
