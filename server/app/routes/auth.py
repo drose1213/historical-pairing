@@ -66,6 +66,10 @@ def _generate_code() -> str:
     return "".join(random.choices(string.digits, k=6))
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _send_email(email: str, code: str) -> None:
     """发送验证码邮件。SMTP 未配置时降级为控制台输出。"""
     if not settings.smtp_host or not settings.smtp_user or not settings.smtp_password:
@@ -118,17 +122,25 @@ def get_captcha() -> CaptchaResponse:
 
 @router.post("/send-code", response_model=SendCodeResponse)
 def send_code(request: SendCodeRequest, db: Session = Depends(get_db)) -> SendCodeResponse:
+    now = _utc_now()
     if not verify_captcha(request.captcha_token, request.captcha_answer):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="验证码答案错误，请重新获取",
+        )
+    # Reject already-registered emails before wasting a code
+    existing_user = db.query(User).filter(User.email == request.email).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该邮箱已注册，请直接登录",
         )
     # Check if there's a recent code that hasn't expired (60 second cooldown)
     recent = (
         db.query(VerificationCode)
         .filter(
             VerificationCode.email == request.email,
-            VerificationCode.expires_at > datetime.now(timezone.utc),
+            VerificationCode.expires_at > now,
             VerificationCode.used == False,  # noqa: E712
         )
         .order_by(VerificationCode.created_at.desc())
@@ -136,7 +148,7 @@ def send_code(request: SendCodeRequest, db: Session = Depends(get_db)) -> SendCo
     )
 
     if recent:
-        elapsed = (datetime.now(timezone.utc) - recent.created_at).total_seconds()
+        elapsed = (now - recent.created_at).total_seconds()
         if elapsed < 60:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -148,7 +160,7 @@ def send_code(request: SendCodeRequest, db: Session = Depends(get_db)) -> SendCo
     verification = VerificationCode(
         email=request.email,
         code=code,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        expires_at=now + timedelta(minutes=10),
     )
     db.add(verification)
     db.commit()
@@ -161,13 +173,19 @@ def send_code(request: SendCodeRequest, db: Session = Depends(get_db)) -> SendCo
 
 @router.post("/register", response_model=AuthResponse)
 def register(request: RegisterRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    now = _utc_now()
+    # Check if user already exists first (before consuming the code)
+    existing_user = db.query(User).filter(User.email == request.email).first()
+    if existing_user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该邮箱已注册")
+
     # Find valid verification code
     verification = (
         db.query(VerificationCode)
         .filter(
             VerificationCode.email == request.email,
             VerificationCode.code == request.code,
-            VerificationCode.expires_at > datetime.now(timezone.utc),
+            VerificationCode.expires_at > now,
             VerificationCode.used == False,  # noqa: E712
         )
         .order_by(VerificationCode.created_at.desc())
@@ -179,11 +197,6 @@ def register(request: RegisterRequest, db: Session = Depends(get_db)) -> AuthRes
 
     # Mark code as used
     verification.used = True
-
-    # Check if user already exists
-    existing_user = db.query(User).filter(User.email == request.email).first()
-    if existing_user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该邮箱已注册")
 
     # Create user
     user = User(

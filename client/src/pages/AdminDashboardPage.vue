@@ -246,7 +246,7 @@ onMounted(() => {
             <input
               :type="config.key === 'openai_api_key' ? 'password' : 'text'"
               :value="config.key === 'openai_api_key' ? (config.configured ? '******' : '') : config.value"
-              :placeholder="config.key === 'openai_api_key' ? '输入新的 API Key' : config.value"
+              :placeholder="config.key === 'openai_api_key' ? '输入新的 API Key' : (config.value ?? undefined)"
               @change="(e) => saveConfig(config.key, (e.target as HTMLInputElement).value)"
             />
             <button :disabled="saving[config.key]" @click="(e) => {

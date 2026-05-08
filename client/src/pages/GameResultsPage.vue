@@ -1,31 +1,88 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
-import { useRouter } from "vue-router";
-import { CheckCircle2, CircleAlert, RotateCcw, User, LogIn, Trophy, TrendingUp } from "lucide-vue-next";
-import { useGameStore } from "../stores/game";
+import { computed, onMounted, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { CheckCircle2, CircleAlert, LogIn, RotateCcw, Trophy, User } from "lucide-vue-next";
+import {
+  getHistoryDetail,
+  type HistoryDetailResponse,
+} from "../api";
 import { useAuthStore } from "../stores/auth";
-import { getUserStats, type UserStatsResponse } from "../api";
+import { useGameStore } from "../stores/game";
 
+const route = useRoute();
 const router = useRouter();
 const gameStore = useGameStore();
 const authStore = useAuthStore();
 
-const results = computed(() => gameStore.results);
-const timeUsed = computed(() => gameStore.timeUsed);
-const keyword = computed(() => gameStore.currentGame?.keyword ?? "");
+const historyDetail = ref<HistoryDetailResponse | null>(null);
+const detailLoading = ref(false);
+const detailError = ref("");
 
-const userStats = ref<UserStatsResponse | null>(null);
+const gameId = computed(() => route.params.gameId as string);
+const storeResults = computed(() => gameStore.results);
+const usingStoreResults = computed(() => Boolean(storeResults.value?.results?.length));
 
-async function loadStats() {
-  if (!authStore.isLoggedIn) return;
+const displayKeyword = computed(() => {
+  if (usingStoreResults.value) return gameStore.currentGame?.keyword ?? "";
+  return historyDetail.value?.keyword ?? "";
+});
+
+const displayTimeUsed = computed(() => {
+  if (usingStoreResults.value) return gameStore.timeUsed ?? 0;
+  return historyDetail.value?.time_used ?? 0;
+});
+
+const displayScore = computed(() => {
+  if (usingStoreResults.value) return storeResults.value?.final_score ?? 0;
+  return historyDetail.value?.score ?? 0;
+});
+
+const displayCorrectCount = computed(() => {
+  if (usingStoreResults.value) return storeResults.value?.correct_count ?? 0;
+  return historyDetail.value?.results.filter((item) => item.is_correct).length ?? 0;
+});
+
+const displayTotal = computed(() => {
+  if (usingStoreResults.value) return storeResults.value?.total ?? 0;
+  return historyDetail.value?.total ?? 0;
+});
+
+const displayResults = computed(() => {
+  if (usingStoreResults.value) {
+    return (storeResults.value?.results ?? []).map((item) => ({
+      key: item.leftId,
+      left: item.left,
+      userRight: item.userRight,
+      correctRight: item.correctRight,
+      isCorrect: item.isCorrect,
+      explanation: item.explanation,
+      type: item.type,
+    }));
+  }
+
+  return (historyDetail.value?.results ?? []).map((item, index) => ({
+    key: `${item.left}-${index}`,
+    left: item.left,
+    userRight: item.right,
+    correctRight: item.correct_right,
+    isCorrect: item.is_correct,
+    explanation: item.explanation,
+    type: item.type,
+  }));
+});
+
+async function loadHistoryDetail() {
+  if (usingStoreResults.value) return;
+  detailLoading.value = true;
+  detailError.value = "";
   try {
-    userStats.value = await getUserStats();
-  } catch {
-    userStats.value = null;
+    historyDetail.value = await getHistoryDetail(gameId.value);
+  } catch (error) {
+    detailError.value = error instanceof Error ? error.message : "加载答题详情失败";
+  } finally {
+    detailLoading.value = false;
   }
 }
-
-onMounted(loadStats);
 
 function formatTime(seconds: number) {
   const mins = Math.floor(seconds / 60);
@@ -34,41 +91,49 @@ function formatTime(seconds: number) {
 }
 
 function playAgain() {
-  router.push({ path: "/", query: { keyword: keyword.value } });
+  router.push({ path: "/", query: { keyword: displayKeyword.value } });
 }
 
-// 题型正确率统计
-const typeStats = computed(() => {
-  if (!results.value?.results) return [];
-  const map: Record<string, { total: number; correct: number }> = {};
-  for (const r of results.value.results) {
-    if (!map[r.type]) map[r.type] = { total: 0, correct: 0 };
-    map[r.type].total++;
-    if (r.isCorrect) map[r.type].correct++;
+// Card modal
+const selectedCard = ref<(typeof displayResults.value)[number] | null>(null);
+
+function openCard(item: (typeof displayResults.value)[number]) {
+  selectedCard.value = item;
+}
+
+function closeCard() {
+  selectedCard.value = null;
+}
+
+// Generate a unique card ID based on content
+function getCardId(item: (typeof displayResults.value)[number], index: number) {
+  const str = item.left + item.correctRight + item.type + index;
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
   }
-  return Object.entries(map).map(([type, v]) => ({
-    type,
-    total: v.total,
-    correct: v.correct,
-    rate: v.total > 0 ? v.correct / v.total : 0,
-  }));
-});
+  return Math.abs(hash);
+}
 
-// 题目分析（关键词分布）
-const keywordStats = computed(() => {
-  if (!results.value?.results) return [];
-  const kw = keyword.value;
-  const total = results.value.results.length;
-  const correct = results.value.results.filter((r) => r.isCorrect).length;
-  return [{
-    keyword: kw,
-    total,
-    correct,
-    rate: total > 0 ? correct / total : 0,
-  }];
-});
+// Card color themes
+const cardThemes = [
+  { bg: "linear-gradient(135deg, #246b55 0%, #35c494 100%)", accent: "#35c494", border: "#1a5a45" },
+  { bg: "linear-gradient(135deg, #2f7f95 0%, #68d7ed 100%)", accent: "#68d7ed", border: "#1d6075" },
+  { bg: "linear-gradient(135deg, #7c3aed 0%, #a78bfa 100%)", accent: "#a78bfa", border: "#5b21b6" },
+  { bg: "linear-gradient(135deg, #dc2626 0%, #f87171 100%)", accent: "#f87171", border: "#991b1b" },
+  { bg: "linear-gradient(135deg, #d97706 0%, #fbbf24 100%)", accent: "#fbbf24", border: "#92400e" },
+  { bg: "linear-gradient(135deg, #059669 0%, #34d399 100%)", accent: "#34d399", border: "#065f46" },
+];
 
-const tendency = computed(() => userStats.value?.tendency ?? null);
+function getCardTheme(index: number) {
+  return cardThemes[index % cardThemes.length];
+}
+
+onMounted(async () => {
+  await loadHistoryDetail();
+});
 </script>
 
 <template>
@@ -80,112 +145,52 @@ const tendency = computed(() => userStats.value?.tendency ?? null);
       </div>
     </header>
 
-    <!-- 得分摘要 -->
     <section class="results-summary">
       <div class="score-card primary">
-        <div class="score">{{ results?.final_score ?? 0 }}</div>
+        <div class="score">{{ displayScore }}</div>
         <div class="score-label">综合得分</div>
       </div>
       <div class="score-card">
-        <div class="score small">{{ results?.correct_count ?? 0 }}/{{ results?.total }}</div>
+        <div class="score small">{{ displayCorrectCount }}/{{ displayTotal }}</div>
         <div class="score-label">答对题数</div>
       </div>
       <div class="time-card">
-        <div class="time">{{ formatTime(timeUsed || 0) }}</div>
+        <div class="time">{{ formatTime(displayTimeUsed) }}</div>
         <div class="time-label">用时</div>
       </div>
     </section>
 
-    <!-- 数据分析卡片（用户倾向） -->
-    <section v-if="tendency" class="data-analysis-card">
-      <div class="card-icon green">
-        <TrendingUp :size="20" />
-      </div>
-      <div class="card-body">
-        <p class="card-title">数据分析</p>
-        <p class="card-desc">{{ tendency }}</p>
-      </div>
-    </section>
-
-    <!-- 两张分析卡片 -->
-    <section class="analysis-cards">
-      <!-- 题目分析卡片 -->
-      <div class="analysis-card kw-card">
-        <div class="card-header-bar green-bar">
-          <span class="card-type-label">题目分析</span>
-        </div>
-        <div class="card-content">
-          <div v-for="stat in keywordStats" :key="stat.keyword" class="stat-row">
-            <div class="stat-label-col">
-              <span class="stat-kw">{{ stat.keyword }}</span>
-              <span class="stat-count">{{ stat.correct }}/{{ stat.total }}</span>
-            </div>
-            <div class="stat-track">
-              <div
-                class="stat-fill green-fill"
-                :style="{ width: `${stat.rate * 100}%` }"
-              ></div>
-            </div>
-            <span class="stat-pct green-pct">{{ (stat.rate * 100).toFixed(0) }}%</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- 题型准确率卡片 -->
-      <div class="analysis-card type-card">
-        <div class="card-header-bar purple-bar">
-          <span class="card-type-label">题型准确率</span>
-        </div>
-        <div class="card-content">
-          <div v-for="stat in typeStats" :key="stat.type" class="stat-row">
-            <div class="stat-label-col">
-              <span class="stat-kw">{{ stat.type }}</span>
-              <span class="stat-count">{{ stat.correct }}/{{ stat.total }}</span>
-            </div>
-            <div class="stat-track">
-              <div
-                class="stat-fill purple-fill"
-                :style="{
-                  width: `${stat.rate * 100}%`,
-                  background: stat.rate >= 0.75 ? '#8b5cf6' : stat.rate >= 0.4 ? '#a78bfa' : '#c4b5fd',
-                }"
-              ></div>
-            </div>
-            <span
-              class="stat-pct"
-              :style="{ color: stat.rate >= 0.75 ? '#7c3aed' : stat.rate >= 0.4 ? '#8b5cf6' : '#a78bfa' }"
-            >{{ (stat.rate * 100).toFixed(0) }}%</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- 答案对照 -->
     <section class="results-table">
       <h2>答案对照</h2>
-      <div class="table">
+      <p class="table-hint">点击答案查看详情</p>
+
+      <div v-if="detailLoading" class="status-text">加载中...</div>
+      <div v-else-if="detailError" class="status-text error-text">{{ detailError }}</div>
+      <div v-else-if="displayResults.length === 0" class="status-text">暂无答题详情</div>
+
+      <div v-else class="table">
         <div
-          v-for="item in results?.results"
-          :key="item.leftId"
+          v-for="(item, index) in displayResults"
+          :key="item.key"
           class="result-row"
           :class="item.isCorrect ? 'is-correct' : 'is-wrong'"
+          @click="openCard(item)"
         >
           <div class="result-icon">
-            <CheckCircle2 v-if="item.isCorrect" :size="24" />
-            <CircleAlert v-else :size="24" />
+            <CheckCircle2 v-if="item.isCorrect" :size="22" />
+            <CircleAlert v-else :size="22" />
           </div>
           <div class="result-content">
             <div class="pair-info">
               <span class="left-text">{{ item.left }}</span>
               <span class="arrow">→</span>
-              <span v-if="item.isCorrect" class="right-text is-correct">{{ item.correctRight }}</span>
+              <span v-if="item.isCorrect" class="right-text is-correct clickable">{{ item.correctRight }}</span>
               <template v-else>
-                <span class="right-text is-wrong">{{ item.userRight || "未作答" }}</span>
-                <span class="correct-label">正确：</span>
+                <span class="right-text is-wrong clickable">{{ item.userRight || "未作答" }}</span>
+                <span class="correct-label">→</span>
                 <span class="right-text is-correct">{{ item.correctRight }}</span>
               </template>
             </div>
-            <p class="explanation">{{ item.explanation }}</p>
             <p class="type">{{ item.type }}</p>
           </div>
         </div>
@@ -193,23 +198,93 @@ const tendency = computed(() => userStats.value?.tendency ?? null);
     </section>
 
     <section class="actions">
-      <button class="action-btn primary" @click="playAgain">
+      <button class="action-btn primary" type="button" @click="playAgain">
         <RotateCcw :size="18" />
         <span>再来一局</span>
       </button>
-      <button class="action-btn" @click="router.push('/leaderboard')">
+      <button class="action-btn" type="button" @click="router.push('/leaderboard')">
         <Trophy :size="18" />
         <span>排行榜</span>
       </button>
-      <button v-if="authStore.isLoggedIn" class="action-btn" @click="router.push('/profile')">
+      <button v-if="authStore.isLoggedIn" class="action-btn" type="button" @click="router.push('/profile')">
         <User :size="18" />
         <span>查看战绩</span>
       </button>
-      <button v-else class="action-btn" @click="router.push('/')">
+      <button v-else class="action-btn" type="button" @click="router.push('/')">
         <LogIn :size="18" />
         <span>登录后查看战绩</span>
       </button>
     </section>
+
+    <!-- Card Modal -->
+    <Teleport to="body">
+      <div v-if="selectedCard" class="card-modal-overlay" @click="closeCard">
+        <div
+          class="collectible-card"
+          :class="selectedCard.isCorrect ? 'card-correct' : 'card-wrong'"
+          @click.stop
+        >
+          <button class="card-close" @click="closeCard">×</button>
+
+          <div class="card-ornament-top">
+            <div class="ornament-line"></div>
+            <div class="ornament-dots">
+              <span v-for="n in 5" :key="n" class="ornament-dot"></span>
+            </div>
+            <div class="ornament-line"></div>
+          </div>
+
+          <div class="card-badge" :class="selectedCard.isCorrect ? 'badge-correct' : 'badge-wrong'">
+            <CheckCircle2 v-if="selectedCard.isCorrect" :size="14" />
+            <CircleAlert v-else :size="14" />
+            {{ selectedCard.isCorrect ? "回答正确" : "回答错误" }}
+          </div>
+
+          <div class="card-corner-lu"></div>
+          <div class="card-corner-ru"></div>
+          <div class="card-corner-ld"></div>
+          <div class="card-corner-rd"></div>
+
+          <div class="card-id">NO.{{ getCardId(selectedCard, displayResults.indexOf(selectedCard)) }}</div>
+
+          <div class="card-type">{{ selectedCard.type }}</div>
+
+          <div class="card-pair">
+            <div class="card-side left-side">
+              <div class="side-label">题目</div>
+              <div class="side-value">{{ selectedCard.left }}</div>
+            </div>
+            <div class="card-divider">
+              <div class="divider-line"></div>
+              <div class="divider-icon">↔</div>
+              <div class="divider-line"></div>
+            </div>
+            <div class="card-side right-side">
+              <div class="side-label">正确答案</div>
+              <div class="side-value correct">{{ selectedCard.correctRight }}</div>
+            </div>
+          </div>
+
+          <div v-if="!selectedCard.isCorrect && selectedCard.userRight" class="card-user-answer">
+            <div class="side-label">你的答案</div>
+            <div class="side-value wrong">{{ selectedCard.userRight }}</div>
+          </div>
+
+          <div class="card-explanation">
+            <div class="explanation-label">解析</div>
+            <div class="explanation-text">{{ selectedCard.explanation }}</div>
+          </div>
+
+          <div class="card-ornament-bottom">
+            <div class="ornament-line"></div>
+            <div class="ornament-dots">
+              <span v-for="n in 5" :key="n" class="ornament-dot"></span>
+            </div>
+            <div class="ornament-line"></div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </main>
 </template>
 
@@ -228,8 +303,6 @@ const tendency = computed(() => userStats.value?.tendency ?? null);
 .eyebrow {
   font-size: 12px;
   color: #6b7280;
-  text-transform: uppercase;
-  letter-spacing: 1px;
   margin: 0;
 }
 
@@ -240,7 +313,6 @@ h1 {
   margin: 4px 0 0;
 }
 
-/* 得分摘要 */
 .results-summary {
   display: flex;
   gap: 16px;
@@ -271,7 +343,8 @@ h1 {
   line-height: 1;
 }
 
-.score.small {
+.score.small,
+.time {
   font-size: 32px;
 }
 
@@ -282,182 +355,6 @@ h1 {
   margin-top: 8px;
 }
 
-.time {
-  font-size: 32px;
-  font-weight: 800;
-  color: #1a1a1a;
-}
-
-/* 数据分析卡片 */
-.data-analysis-card {
-  display: flex;
-  gap: 14px;
-  align-items: flex-start;
-  max-width: 560px;
-  margin: 0 auto 16px;
-  background: linear-gradient(135deg, #f0fdf4, #e8f5ee);
-  border: 1px solid #86efac;
-  border-radius: 14px;
-  padding: 14px 18px;
-}
-
-.card-icon {
-  flex-shrink: 0;
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.card-icon.green {
-  background: #22c55e;
-  color: white;
-}
-
-.card-body {
-  flex: 1;
-}
-
-.card-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: #6b7280;
-  margin: 0 0 3px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.card-desc {
-  font-size: 14px;
-  color: #1a1a1a;
-  line-height: 1.6;
-  margin: 0;
-  font-weight: 500;
-}
-
-/* 两张分析卡片 */
-.analysis-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 560px;
-  margin: 0 auto 20px;
-}
-
-.analysis-card {
-  border-radius: 16px;
-  overflow: hidden;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-}
-
-.kw-card {
-  background: linear-gradient(135deg, #ecfdf5, #d1fae5);
-}
-
-.type-card {
-  background: linear-gradient(135deg, #f5f3ff, #ede9fe);
-}
-
-.card-header-bar {
-  padding: 10px 18px;
-}
-
-.green-bar {
-  background: rgba(34, 197, 94, 0.15);
-  border-bottom: 1px solid rgba(34, 197, 94, 0.25);
-}
-
-.purple-bar {
-  background: rgba(139, 92, 246, 0.12);
-  border-bottom: 1px solid rgba(139, 92, 246, 0.2);
-}
-
-.card-type-label {
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.green-bar .card-type-label {
-  color: #15803d;
-}
-
-.purple-bar .card-type-label {
-  color: #7c3aed;
-}
-
-.card-content {
-  padding: 16px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.stat-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.stat-label-col {
-  width: 100px;
-  flex-shrink: 0;
-}
-
-.stat-kw {
-  display: block;
-  font-size: 14px;
-  font-weight: 700;
-  color: #1a1a1a;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.stat-count {
-  font-size: 11px;
-  color: #6b7280;
-  font-weight: 600;
-}
-
-.stat-track {
-  flex: 1;
-  height: 10px;
-  background: rgba(0, 0, 0, 0.1);
-  border-radius: 5px;
-  overflow: hidden;
-}
-
-.stat-fill {
-  height: 100%;
-  border-radius: 5px;
-  transition: width 0.5s ease;
-}
-
-.green-fill {
-  background: linear-gradient(90deg, #22c55e, #4ade80);
-}
-
-.purple-fill {
-  background: linear-gradient(90deg, #8b5cf6, #a78bfa);
-}
-
-.stat-pct {
-  width: 42px;
-  text-align: right;
-  font-size: 14px;
-  font-weight: 800;
-  flex-shrink: 0;
-}
-
-.green-pct {
-  color: #15803d;
-}
-
-/* 答案对照 */
 .results-table {
   max-width: 560px;
   margin: 0 auto;
@@ -471,21 +368,38 @@ h1 {
   font-size: 18px;
   font-weight: 700;
   color: #1a1a1a;
-  margin: 0 0 20px;
+  margin: 0 0 4px;
+}
+
+.table-hint {
+  font-size: 12px;
+  color: #9ca3af;
+  margin: 0 0 16px;
+}
+
+.status-text {
+  color: #6b7280;
+  padding: 8px 0;
+}
+
+.error-text {
+  color: #dc2626;
 }
 
 .table {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .result-row {
   display: flex;
   gap: 12px;
-  padding: 16px;
+  padding: 14px 16px;
   border-radius: 12px;
   border: 1px solid #e5e7eb;
+  cursor: pointer;
+  transition: all 0.2s;
 }
 
 .result-row.is-correct {
@@ -498,8 +412,14 @@ h1 {
   border-color: #fca5a5;
 }
 
+.result-row:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
 .result-icon {
   flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .is-correct .result-icon {
@@ -536,7 +456,15 @@ h1 {
 
 .right-text.is-wrong {
   color: #ef4444;
-  text-decoration: line-through;
+}
+
+.right-text.clickable {
+  cursor: pointer;
+}
+
+.right-text.clickable:hover {
+  text-decoration: underline;
+  text-decoration-style: dotted;
 }
 
 .correct-label {
@@ -545,17 +473,10 @@ h1 {
   margin-left: 4px;
 }
 
-.explanation {
-  font-size: 14px;
-  color: #4b5563;
-  margin: 8px 0 4px;
-  line-height: 1.5;
-}
-
 .type {
   font-size: 12px;
   color: #9ca3af;
-  margin: 0;
+  margin: 4px 0 0;
 }
 
 .actions {
@@ -594,5 +515,316 @@ h1 {
 .action-btn.primary:hover {
   background: #1d5243;
   color: white;
+}
+
+/* Collectible Card Modal */
+.card-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.collectible-card {
+  position: relative;
+  background: linear-gradient(145deg, #faf6ee 0%, #f0e8d6 60%, #e8dcc8 100%);
+  border: 3px solid #c9b98a;
+  border-radius: 20px;
+  padding: 28px 24px 24px;
+  max-width: 380px;
+  width: 100%;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 255, 255, 0.1) inset,
+    0 0 40px rgba(201, 185, 138, 0.3);
+  animation: cardAppear 0.3s ease-out;
+}
+
+.collectible-card.card-correct {
+  border-color: #22c55e;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 255, 255, 0.1) inset,
+    0 0 30px rgba(34, 197, 94, 0.2);
+}
+
+.collectible-card.card-wrong {
+  border-color: #ef4444;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 255, 255, 0.1) inset,
+    0 0 30px rgba(239, 68, 68, 0.2);
+}
+
+@keyframes cardAppear {
+  from {
+    opacity: 0;
+    transform: scale(0.9) rotateX(10deg);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) rotateX(0);
+  }
+}
+
+.card-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: rgba(0, 0, 0, 0.1);
+  border: none;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #6b7280;
+  transition: all 0.2s;
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 300;
+}
+
+.card-close:hover {
+  background: rgba(0, 0, 0, 0.2);
+  color: #1a1a1a;
+}
+
+.card-corner-lu,
+.card-corner-ru,
+.card-corner-ld,
+.card-corner-rd {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-color: #c9b98a;
+  border-style: solid;
+}
+
+.card-correct .card-corner-lu,
+.card-correct .card-corner-ru,
+.card-correct .card-corner-ld,
+.card-correct .card-corner-rd {
+  border-color: #22c55e;
+}
+
+.card-wrong .card-corner-lu,
+.card-wrong .card-corner-ru,
+.card-wrong .card-corner-ld,
+.card-wrong .card-corner-rd {
+  border-color: #ef4444;
+}
+
+.card-corner-lu {
+  top: 8px;
+  left: 8px;
+  border-width: 3px 0 0 3px;
+  border-radius: 6px 0 0 0;
+}
+
+.card-corner-ru {
+  top: 8px;
+  right: 8px;
+  border-width: 3px 3px 0 0;
+  border-radius: 0 6px 0 0;
+}
+
+.card-corner-ld {
+  bottom: 8px;
+  left: 8px;
+  border-width: 0 0 3px 3px;
+  border-radius: 0 0 0 6px;
+}
+
+.card-corner-rd {
+  bottom: 8px;
+  right: 8px;
+  border-width: 0 3px 3px 0;
+  border-radius: 0 0 6px 0;
+}
+
+.card-id {
+  position: absolute;
+  top: 14px;
+  left: 20px;
+  font-size: 10px;
+  color: #9ca3af;
+  font-weight: 600;
+  letter-spacing: 1px;
+  font-family: monospace;
+}
+
+.card-type {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #8b7355;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  margin-bottom: 16px;
+}
+
+.card-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+  margin: 0 auto 20px;
+  width: fit-content;
+}
+
+.card-badge.badge-correct {
+  background: linear-gradient(135deg, #22c55e, #4ade80);
+  color: white;
+}
+
+.card-badge.badge-wrong {
+  background: linear-gradient(135deg, #ef4444, #f87171);
+  color: white;
+}
+
+.card-pair {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.card-side {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.7);
+  border: 2px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px;
+  text-align: center;
+}
+
+.side-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #9ca3af;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.side-value {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a1a1a;
+  line-height: 1.3;
+}
+
+.side-value.correct {
+  color: #22c55e;
+}
+
+.side-value.wrong {
+  color: #ef4444;
+  text-decoration: line-through;
+}
+
+.card-divider {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 30px;
+}
+
+.divider-line {
+  flex: 1;
+  width: 2px;
+  background: linear-gradient(to bottom, transparent, #c9b98a, transparent);
+}
+
+.divider-icon {
+  font-size: 12px;
+  color: #c9b98a;
+}
+
+.card-user-answer {
+  background: rgba(254, 226, 226, 0.5);
+  border: 1px solid #fca5a5;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+.card-user-answer .side-value {
+  color: #dc2626;
+  text-decoration: line-through;
+}
+
+.card-explanation {
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.explanation-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #9ca3af;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+.explanation-text {
+  font-size: 14px;
+  color: #4b5563;
+  line-height: 1.6;
+}
+
+.card-ornament-top,
+.card-ornament-bottom {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.ornament-line {
+  flex: 1;
+  height: 2px;
+  background: linear-gradient(to right, transparent, #c9b98a, transparent);
+}
+
+.ornament-dots {
+  display: flex;
+  gap: 4px;
+}
+
+.ornament-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #c9b98a;
+}
+
+@media (max-width: 640px) {
+  .results-summary {
+    flex-direction: column;
+  }
+
+  .results-table,
+  .results-summary {
+    max-width: 100%;
+  }
 }
 </style>

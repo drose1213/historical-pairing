@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -74,6 +76,54 @@ class RecentKeywordsResponse(BaseModel):
 _DEFAULT_KEYWORDS = ["三国", "唐朝", "秦始皇", "法国大革命", "工业革命"]
 
 
+_PERIOD_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("先秦时期", ("夏", "商", "周", "春秋", "战国", "孔子", "孟子", "老子", "庄子", "荀子")),
+    ("秦汉时期", ("秦", "秦始皇", "嬴政", "刘邦", "项羽", "汉", "汉武帝", "张骞", "丝绸之路")),
+    ("三国两晋南北朝", ("三国", "曹操", "刘备", "孙权", "诸葛亮", "赤壁", "魏", "蜀", "吴", "晋", "南北朝")),
+    ("隋唐时期", ("隋", "唐", "唐朝", "唐太宗", "武则天", "唐玄宗", "安史", "贞观", "开元")),
+    ("宋元时期", ("宋", "北宋", "南宋", "元", "蒙古", "成吉思汗", "忽必烈", "岳飞", "王安石")),
+    ("明清时期", ("明", "清", "康熙", "雍正", "乾隆", "郑和", "李自成", "鸦片战争")),
+    ("中国近现代", ("辛亥", "民国", "五四", "新文化", "抗日", "解放战争", "新中国", "改革开放")),
+    ("古代世界", ("古埃及", "古希腊", "古罗马", "罗马", "雅典", "斯巴达", "亚历山大")),
+    ("中世纪欧洲", ("中世纪", "封建", "拜占庭", "十字军", "黑死病", "黑暗时代")),
+    ("近代欧洲", ("文艺复兴", "宗教改革", "启蒙", "法国大革命", "拿破仑", "工业革命")),
+    ("20世纪世界", ("第一次世界大战", "一战", "第二次世界大战", "二战", "冷战", "联合国")),
+)
+
+
+def _period_from_keyword(keyword: str) -> str:
+    normalized = keyword.strip()
+    if not normalized:
+        return "综合历史"
+
+    for period, aliases in _PERIOD_KEYWORDS:
+        if any(alias in normalized for alias in aliases):
+            return period
+
+    years = [int(match) for match in re.findall(r"\d{3,4}", normalized)]
+    if years:
+        year = min(years)
+        if year < 221:
+            return "先秦至秦汉"
+        if year < 589:
+            return "三国两晋南北朝"
+        if year < 907:
+            return "隋唐时期"
+        if year < 1368:
+            return "宋元时期"
+        if year < 1840:
+            return "明清时期"
+        if year < 1912:
+            return "中国近代"
+        if year < 1949:
+            return "民国时期"
+        if year < 2000:
+            return "20世纪世界"
+        return "当代历史"
+
+    return "综合历史"
+
+
 class HistoryResultItem(BaseModel):
     left: str
     right: str
@@ -125,7 +175,7 @@ def get_user_stats(
     period_map: dict[str, list[int]] = {}
     for g in submitted_games:
         if g.score is not None:
-            period_map.setdefault(g.keyword, []).append(g.score)
+            period_map.setdefault(_period_from_keyword(g.keyword), []).append(g.score)
     periods = [
         PeriodStats(keyword=k, count=len(v), avg_score=round(sum(v) / len(v), 2))
         for k, v in sorted(period_map.items(), key=lambda x: len(x[1]), reverse=True)
@@ -155,6 +205,7 @@ def get_user_stats(
         )
         for pt, cnt in pair_type_rows
     ]
+    pair_types = sorted(pair_types, key=lambda p: p.total, reverse=True)[:5]
 
     tendency = _build_tendency(pair_types)
 
@@ -175,7 +226,7 @@ def get_user_stats(
 @router.get("", response_model=HistoryListResponse)
 def get_history(
     page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=100),
+    page_size: int = Query(5, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> HistoryListResponse:

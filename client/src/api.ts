@@ -9,7 +9,7 @@ const parseError = async (response: Response) => {
 
 const getToken = () => localStorage.getItem("token");
 
-const authHeaders = () => {
+const authHeaders = (): Record<string, string> => {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
