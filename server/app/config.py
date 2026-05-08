@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     port: int = 8787
     client_origin: str = "http://localhost:5173"
+    # 生产环境可设置多个 origin，逗号分隔，如 "https://example.com,https://www.example.com"
+    cors_origins: str | None = None
 
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306

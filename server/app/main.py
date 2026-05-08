@@ -55,9 +55,15 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Historical Pairing API")
 
+# CORS origins: 优先使用 CORS_ORIGINS 环境变量（逗号分隔），否则用 CLIENT_ORIGIN + localhost
+_cors_origins = (
+    [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    if settings.cors_origins
+    else list({settings.client_origin, "http://127.0.0.1:5173"})
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=list({settings.client_origin, "http://127.0.0.1:5173"}),
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
