@@ -29,8 +29,11 @@ PROMPT = """你是一个严谨的历史知识学家以及出题小能手。
 4. 不要生成有争议或模糊答案。
 5. left 不超过 20 个汉字，right 不超过 32 个汉字。
 6. explanation 控制在 80 字以内。
-7. 如果关键词不是历史相关内容，仍尝试从历史角度解释；完全无关时返回与“历史学习”相关的基础配对。
-8. 返回严格 JSON，不要输出 Markdown。
+7. 4 组题必须是 4 个彼此不同的历史对象或角度，但都要和关键词有明确关联；优先覆盖人物、事件、制度/政策、作品/思想、地点、影响等不同类型。
+8. 不要把同一个关键词机械改写成“关键词背景、关键词人物、关键词事件、关键词影响”这类模板题；left 不要全部以关键词开头，也不要全部围绕同一个人或同一个事件。
+9. 如果关键词是人物，可以围绕其相关事件、关系人物、作品/政策、历史影响分别出题；如果关键词是事件，可以围绕起因、关键人物、过程节点、结果影响分别出题，但 left 必须是具体名称而不是泛泛标签。
+10. 如果关键词不是历史相关内容，仍尝试从历史角度解释；完全无关时返回与“历史学习”相关的基础配对。
+11. 返回严格 JSON，不要输出 Markdown。
 
 返回格式：
 {{
@@ -83,14 +86,14 @@ def _fallback_pairs(keyword: str) -> list[GeneratedPair]:
 
     cleaned = keyword.strip() or "历史"
     return [
-        GeneratedPair(left=f"{cleaned}背景", right="理解时代条件", explanation=f"学习 {cleaned} 时，先看政治、经济、文化等时代条件。", type="概念-方法"),
-        GeneratedPair(left=f"{cleaned}人物", right="梳理关键行动", explanation=f"围绕 {cleaned} 的人物，可以用行动和影响建立配对。", type="人物-方法"),
-        GeneratedPair(left=f"{cleaned}事件", right="判断因果关系", explanation=f"历史事件常通过原因、经过和结果来理解。", type="事件-方法"),
-        GeneratedPair(left=f"{cleaned}影响", right="比较长期变化", explanation=f"历史影响可从制度、社会、经济和文化角度比较。", type="影响-方法"),
+        GeneratedPair(left="时代背景", right="理解历史条件", explanation=f"学习 {cleaned} 时，先看其所处时代的政治、经济、文化条件。", type="背景-条件"),
+        GeneratedPair(left="相关人物", right="梳理行动关系", explanation=f"围绕 {cleaned} 找相关人物，比较他们的行动、立场和相互关系。", type="人物-关系"),
+        GeneratedPair(left="关键事件", right="判断因果脉络", explanation=f"把 {cleaned} 放入具体事件中，按原因、经过、结果建立配对。", type="事件-因果"),
+        GeneratedPair(left="历史影响", right="比较长期变化", explanation=f"从制度、社会、经济和文化角度观察 {cleaned} 带来的变化。", type="影响-变化"),
     ]
 
 
-def _dedupe_and_validate(pairs: list[GeneratedPair]) -> list[GeneratedPair]:
+def _dedupe_and_validate(pairs: list[GeneratedPair], keyword: str = "") -> list[GeneratedPair]:
     seen_left: set[str] = set()
     seen_right: set[str] = set()
     cleaned: list[GeneratedPair] = []
@@ -116,7 +119,41 @@ def _dedupe_and_validate(pairs: list[GeneratedPair]) -> list[GeneratedPair]:
 
     if len(cleaned) < 4:
         raise ValueError(f"generated pairs must contain at least 4 unique pairs, got {len(cleaned)}")
+    _validate_diverse_pairs(cleaned[:4], keyword)
     return cleaned[:4]
+
+
+def _validate_diverse_pairs(pairs: list[GeneratedPair], keyword: str) -> None:
+    normalized_keyword = keyword.strip()
+    if not normalized_keyword:
+        return
+
+    generic_suffixes = (
+        "背景",
+        "人物",
+        "事件",
+        "影响",
+        "原因",
+        "结果",
+        "意义",
+        "作用",
+        "评价",
+        "概念",
+        "方法",
+    )
+    templated_lefts = [
+        pair.left
+        for pair in pairs
+        if pair.left == f"{normalized_keyword}{next((suffix for suffix in generic_suffixes if pair.left.endswith(suffix)), '')}"
+        or any(pair.left == f"{normalized_keyword}{suffix}" for suffix in generic_suffixes)
+    ]
+    keyword_prefixed_lefts = [pair.left for pair in pairs if pair.left.startswith(normalized_keyword)]
+    if len(templated_lefts) >= 2 or len(keyword_prefixed_lefts) >= 3:
+        raise ValueError("generated pairs are too template-like around the keyword")
+
+    type_heads = {re.split(r"[-—－]", pair.type, maxsplit=1)[0].strip() for pair in pairs if pair.type.strip()}
+    if len(type_heads) < 3:
+        raise ValueError("generated pairs must cover at least 3 different item types")
 
 
 def _extract_json_payload(content: str) -> dict:
@@ -194,7 +231,7 @@ async def generate_pairs(
             payload = _extract_json_payload(content)
             parsed = GeneratedPairs.model_validate(payload)
             logger.info("Parsed pairs count before dedupe: %d", len(parsed.pairs))
-            return _dedupe_and_validate(parsed.pairs)
+            return _dedupe_and_validate(parsed.pairs, keyword)
         except ValueError as exc:
             if attempt < 2:
                 logger.warning("Generated payload was invalid (attempt %d), retrying: %s", attempt + 1, exc)

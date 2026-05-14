@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { CheckCircle2, CircleAlert, LogIn, RotateCcw, Trophy, User } from "lucide-vue-next";
+import { ArrowLeft, CheckCircle2, CircleAlert, LogIn, RotateCcw, Trophy, User } from "lucide-vue-next";
 import {
   getHistoryDetail,
   type HistoryDetailResponse,
@@ -21,6 +21,11 @@ const detailError = ref("");
 const gameId = computed(() => route.params.gameId as string);
 const storeResults = computed(() => gameStore.results);
 const usingStoreResults = computed(() => Boolean(storeResults.value?.results?.length));
+const historyPage = computed(() => {
+  const rawPage = Number(route.query.historyPage);
+  return Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1;
+});
+const cameFromProfile = computed(() => route.query.from === "profile");
 
 const displayKeyword = computed(() => {
   if (usingStoreResults.value) return gameStore.currentGame?.keyword ?? "";
@@ -94,6 +99,13 @@ function playAgain() {
   router.push({ path: "/", query: { keyword: displayKeyword.value } });
 }
 
+function backToHistory() {
+  router.push({
+    path: "/profile",
+    query: historyPage.value > 1 ? { page: String(historyPage.value) } : {},
+  });
+}
+
 // Card modal
 const selectedCard = ref<(typeof displayResults.value)[number] | null>(null);
 
@@ -139,6 +151,9 @@ onMounted(async () => {
 <template>
   <main class="results-page">
     <header class="topbar">
+      <button v-if="cameFromProfile" class="back-btn" type="button" @click="backToHistory">
+        <ArrowLeft :size="20" />
+      </button>
       <div>
         <p class="eyebrow">历史配对</p>
         <h1>游戏结果</h1>
@@ -206,7 +221,7 @@ onMounted(async () => {
         <Trophy :size="18" />
         <span>排行榜</span>
       </button>
-      <button v-if="authStore.isLoggedIn" class="action-btn" type="button" @click="router.push('/profile')">
+      <button v-if="authStore.isLoggedIn" class="action-btn" type="button" @click="backToHistory">
         <User :size="18" />
         <span>查看战绩</span>
       </button>
@@ -296,8 +311,32 @@ onMounted(async () => {
 }
 
 .topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   padding: 20px 0;
   border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.topbar > div {
+  flex: 1;
+}
+
+.back-btn {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid #d4c9b0;
+  border-radius: 8px;
+  color: #1a1a1a;
+  cursor: pointer;
+}
+
+.back-btn:hover {
+  border-color: #246b55;
+  color: #246b55;
 }
 
 .eyebrow {

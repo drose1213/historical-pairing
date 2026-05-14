@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { api } from "../api";
 
 export interface User {
@@ -29,14 +29,12 @@ export const useAuthStore = defineStore("auth", () => {
     const response = await api.login(email, password);
     token.value = response.access_token;
     user.value = response.user;
-    localStorage.setItem("token", response.access_token);
   }
 
   async function register(email: string, code: string, password: string) {
     const response = await api.register(email, code, password);
     token.value = response.access_token;
     user.value = response.user;
-    localStorage.setItem("token", response.access_token);
   }
 
   async function sendCode(email: string, captchaToken: string, captchaAnswer: string) {
@@ -46,13 +44,11 @@ export const useAuthStore = defineStore("auth", () => {
   function logout() {
     user.value = null;
     token.value = null;
-    localStorage.removeItem("token");
   }
 
   function initFromStorage() {
-    const storedToken = localStorage.getItem("token");
-    if (storedToken) {
-      token.value = storedToken;
+    if (token.value) {
+      fetchMe();
     }
   }
 
@@ -68,4 +64,10 @@ export const useAuthStore = defineStore("auth", () => {
     logout,
     initFromStorage,
   };
+}, {
+  persist: {
+    key: "auth",
+    storage: localStorage,
+    paths: ["token"],
+  },
 });

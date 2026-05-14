@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ArrowLeft, ChevronLeft, ChevronRight, LogOut } from "lucide-vue-next";
 import { getHistory, getUserStats, type HistoryItem, type UserStatsResponse } from "../api";
 import { useAuthStore } from "../stores/auth";
 
 const router = useRouter();
+const route = useRoute();
 const authStore = useAuthStore();
 
 const history = ref<HistoryItem[]>([]);
@@ -52,6 +53,18 @@ function barWidth(value: number, max: number) {
   return `${Math.max(4, Math.round((value / max) * 100))}%`;
 }
 
+function pageFromQuery() {
+  const rawPage = Number(route.query.page);
+  return Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1;
+}
+
+function syncPageQuery() {
+  router.replace({
+    path: "/profile",
+    query: page.value > 1 ? { page: String(page.value) } : {},
+  });
+}
+
 async function fetchHistory() {
   loading.value = true;
   try {
@@ -79,6 +92,7 @@ async function fetchStats() {
 function prevPage() {
   if (page.value > 1) {
     page.value--;
+    syncPageQuery();
     fetchHistory();
   }
 }
@@ -86,12 +100,16 @@ function prevPage() {
 function nextPage() {
   if (page.value < totalPages.value) {
     page.value++;
+    syncPageQuery();
     fetchHistory();
   }
 }
 
 function viewDetail(item: HistoryItem) {
-  router.push(`/results/${item.id}`);
+  router.push({
+    path: `/results/${item.id}`,
+    query: { from: "profile", historyPage: String(page.value) },
+  });
 }
 
 function logout() {
@@ -100,6 +118,7 @@ function logout() {
 }
 
 onMounted(() => {
+  page.value = pageFromQuery();
   fetchHistory();
   fetchStats();
 });

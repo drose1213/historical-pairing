@@ -1,9 +1,47 @@
+const DEFAULT_TIMEOUT = 30000;
+const MAX_RETRIES = 2;
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public statusCode: number,
+    public code?: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+export class NetworkError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NetworkError";
+  }
+}
+
+export class TimeoutError extends Error {
+  constructor(message: string = "请求超时") {
+    super(message);
+    this.name = "TimeoutError";
+  }
+}
+
+export class RateLimitError extends Error {
+  constructor(message: string = "请求过于频繁，请稍后再试") {
+    super(message);
+    this.name = "RateLimitError";
+  }
+}
+
 const parseError = async (response: Response) => {
   try {
     const body = await response.json();
-    return body.detail || "请求失败";
+    return {
+      message: body.detail || "请求失败",
+      code: body.code,
+    };
   } catch {
-    return "请求失败";
+    return { message: "请求失败", code: undefined };
   }
 };
 
@@ -13,6 +51,73 @@ const authHeaders = (): Record<string, string> => {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
+
+const createAbortController = (timeout: number): AbortController => {
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), timeout);
+  return controller;
+};
+
+interface FetchOptions extends RequestInit {
+  timeout?: number;
+  retries?: number;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  options: FetchOptions = {}
+): Promise<Response> {
+  const { timeout = DEFAULT_TIMEOUT, retries = 0, ...fetchOptions } = options;
+  const controller = createAbortController(timeout);
+  let lastError: Error;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(url, {
+        ...fetchOptions,
+        signal: controller.signal,
+      });
+
+      if (response.status === 429) {
+        const { message } = await parseError(response);
+        throw new RateLimitError(message);
+      }
+
+      return response;
+    } catch (error) {
+      lastError = error as Error;
+
+      if (error instanceof RateLimitError) {
+        throw error;
+      }
+
+      if (error instanceof Error && error.name === "AbortError") {
+        lastError = new TimeoutError();
+      }
+
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+      }
+    }
+  }
+
+  throw lastError!;
+}
+
+async function handleResponse<T>(response: Response): Promise<T> {
+  if (response.ok) {
+    return response.json();
+  }
+
+  const { message, code } = await parseError(response);
+
+  if (response.status === 401) {
+    localStorage.removeItem("token");
+    window.dispatchEvent(new Event("auth:unauthorized"));
+  }
+
+  throw new ApiError(message, response.status, code);
+}
 
 // ============ Types ============
 
@@ -72,11 +177,10 @@ export interface CaptchaData {
 }
 
 export async function getCaptcha(): Promise<CaptchaData> {
-  const response = await fetch("/api/auth/captcha");
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  const response = await fetchWithTimeout("/api/auth/captcha", {
+    timeout: 10000,
+  });
+  return handleResponse<CaptchaData>(response);
 }
 
 export async function sendCode(
@@ -84,14 +188,14 @@ export async function sendCode(
   captchaToken: string,
   captchaAnswer: string
 ): Promise<void> {
-  const response = await fetch("/api/auth/send-code", {
+  const response = await fetchWithTimeout("/api/auth/send-code", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, captcha_token: captchaToken, captcha_answer: captchaAnswer }),
+    timeout: 15000,
+    retries: 1,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
+  return handleResponse<void>(response);
 }
 
 export async function register(
@@ -99,51 +203,46 @@ export async function register(
   code: string,
   password: string
 ): Promise<AuthResponse> {
-  const response = await fetch("/api/auth/register", {
+  const response = await fetchWithTimeout("/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, code, password }),
+    timeout: 20000,
+    retries: 1,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<AuthResponse>(response);
 }
 
 export async function login(email: string, password: string): Promise<AuthResponse> {
-  const response = await fetch("/api/auth/login", {
+  const response = await fetchWithTimeout("/api/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
+    timeout: 20000,
+    retries: 1,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<AuthResponse>(response);
 }
 
 export async function getMe(): Promise<User> {
-  const response = await fetch("/api/auth/me", {
+  const response = await fetchWithTimeout("/api/auth/me", {
     headers: { ...authHeaders() },
+    timeout: 10000,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<User>(response);
 }
 
 // ============ Games ============
 
 export async function createGame(keyword: string): Promise<CreateGameResponse> {
-  const response = await fetch("/api/games", {
+  const response = await fetchWithTimeout("/api/games", {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ keyword }),
+    timeout: 60000,
+    retries: 1,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<CreateGameResponse>(response);
 }
 
 export async function submitGame(
@@ -152,15 +251,14 @@ export async function submitGame(
   timeUsed?: number,
   timeUp?: boolean
 ): Promise<SubmitResponse> {
-  const response = await fetch(`/api/games/${gameId}/submit`, {
+  const response = await fetchWithTimeout(`/api/games/${gameId}/submit`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ matches, time_used: timeUsed ?? null, time_up: timeUp ?? false }),
+    timeout: 30000,
+    retries: 1,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<SubmitResponse>(response);
 }
 
 // ============ Leaderboard ============
@@ -188,11 +286,10 @@ export async function getLeaderboard(
   sortOrder: "asc" | "desc" = "desc"
 ): Promise<LeaderboardResponse> {
   const url = `/api/leaderboard?page=${page}&page_size=${pageSize}&sort_by=${sortBy}&sort_order=${sortOrder}`;
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  const response = await fetchWithTimeout(url, {
+    timeout: 15000,
+  });
+  return handleResponse<LeaderboardResponse>(response);
 }
 
 // ============ History ============
@@ -238,23 +335,19 @@ export async function getHistory(
   page: number = 1,
   pageSize: number = 10
 ): Promise<HistoryListResponse> {
-  const response = await fetch(`/api/history?page=${page}&page_size=${pageSize}`, {
+  const response = await fetchWithTimeout(`/api/history?page=${page}&page_size=${pageSize}`, {
     headers: { ...authHeaders() },
+    timeout: 15000,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<HistoryListResponse>(response);
 }
 
 export async function getHistoryDetail(gameId: string): Promise<HistoryDetailResponse> {
-  const response = await fetch(`/api/history/${gameId}`, {
+  const response = await fetchWithTimeout(`/api/history/${gameId}`, {
     headers: { ...authHeaders() },
+    timeout: 15000,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<HistoryDetailResponse>(response);
 }
 
 export interface PeriodStats {
@@ -284,13 +377,11 @@ export interface UserStatsResponse {
 }
 
 export async function getUserStats(): Promise<UserStatsResponse> {
-  const response = await fetch("/api/history/stats", {
+  const response = await fetchWithTimeout("/api/history/stats", {
     headers: { ...authHeaders() },
+    timeout: 15000,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<UserStatsResponse>(response);
 }
 
 export interface RecentKeywordsResponse {
@@ -298,13 +389,11 @@ export interface RecentKeywordsResponse {
 }
 
 export async function getRecentKeywords(): Promise<RecentKeywordsResponse> {
-  const response = await fetch("/api/history/recent-keywords", {
+  const response = await fetchWithTimeout("/api/history/recent-keywords", {
     headers: { ...authHeaders() },
+    timeout: 10000,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<RecentKeywordsResponse>(response);
 }
 
 // ============ Admin ============
@@ -352,83 +441,72 @@ export interface GameListResponse {
 }
 
 export async function getAdminStats(): Promise<AdminStats> {
-  const response = await fetch("/api/admin/stats", {
+  const response = await fetchWithTimeout("/api/admin/stats", {
     headers: { ...authHeaders() },
+    timeout: 15000,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<AdminStats>(response);
 }
 
 export async function getAdminUsers(
   page: number = 1,
   pageSize: number = 10
 ): Promise<UserListResponse> {
-  const response = await fetch(`/api/admin/users?page=${page}&page_size=${pageSize}`, {
+  const response = await fetchWithTimeout(`/api/admin/users?page=${page}&page_size=${pageSize}`, {
     headers: { ...authHeaders() },
+    timeout: 15000,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<UserListResponse>(response);
 }
 
 export async function getAdminGames(
   page: number = 1,
   pageSize: number = 10
 ): Promise<GameListResponse> {
-  const response = await fetch(`/api/admin/games?page=${page}&page_size=${pageSize}`, {
+  const response = await fetchWithTimeout(`/api/admin/games?page=${page}&page_size=${pageSize}`, {
     headers: { ...authHeaders() },
+    timeout: 15000,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<GameListResponse>(response);
 }
 
 export async function getAdminConfigs(): Promise<ConfigItem[]> {
-  const response = await fetch("/api/admin/configs", {
+  const response = await fetchWithTimeout("/api/admin/configs", {
     headers: { ...authHeaders() },
+    timeout: 10000,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<ConfigItem[]>(response);
 }
 
 export async function updateAdminConfig(key: string, value: string): Promise<ConfigItem> {
-  const response = await fetch(`/api/admin/configs/${encodeURIComponent(key)}`, {
+  const response = await fetchWithTimeout(`/api/admin/configs/${encodeURIComponent(key)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ value }),
+    timeout: 15000,
+    retries: 1,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<ConfigItem>(response);
 }
 
 // ============ Configs (Local) ============
 
 export async function listConfigs(): Promise<ConfigItem[]> {
-  const response = await fetch("/api/configs");
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  const response = await fetchWithTimeout("/api/configs", {
+    timeout: 10000,
+  });
+  return handleResponse<ConfigItem[]>(response);
 }
 
 export async function updateConfig(key: string, value: string): Promise<ConfigItem> {
-  const response = await fetch(`/api/configs/${encodeURIComponent(key)}`, {
+  const response = await fetchWithTimeout(`/api/configs/${encodeURIComponent(key)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key, value }),
+    timeout: 15000,
+    retries: 1,
   });
-  if (!response.ok) {
-    throw new Error(await parseError(response));
-  }
-  return response.json();
+  return handleResponse<ConfigItem>(response);
 }
 
 // ============ Analytics ============
@@ -438,11 +516,16 @@ export async function trackEvent(
   gameId?: string,
   payload?: Record<string, unknown>
 ): Promise<void> {
-  await fetch("/api/analytics/track", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ event_type: eventType, game_id: gameId, payload }),
-  });
+  try {
+    await fetchWithTimeout("/api/analytics/track", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ event_type: eventType, game_id: gameId, payload }),
+      timeout: 5000,
+    });
+  } catch {
+    // Silently fail for analytics tracking
+  }
 }
 
 // ============ API Object ============

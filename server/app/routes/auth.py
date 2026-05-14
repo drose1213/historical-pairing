@@ -5,7 +5,7 @@ import string
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from ..captcha import generate_captcha, verify_captcha
 from ..config import settings
 from ..database import get_db
 from ..models import User, VerificationCode
+from ..rate_limit import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -121,15 +122,16 @@ def get_captcha() -> CaptchaResponse:
 
 
 @router.post("/send-code", response_model=SendCodeResponse)
-def send_code(request: SendCodeRequest, db: Session = Depends(get_db)) -> SendCodeResponse:
+@limiter.limit("3/minute")
+def send_code(request: Request, payload: SendCodeRequest, db: Session = Depends(get_db)) -> SendCodeResponse:
     now = _utc_now()
-    if not verify_captcha(request.captcha_token, request.captcha_answer):
+    if not verify_captcha(payload.captcha_token, payload.captcha_answer):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="验证码答案错误，请重新获取",
         )
     # Reject already-registered emails before wasting a code
-    existing_user = db.query(User).filter(User.email == request.email).first()
+    existing_user = db.query(User).filter(User.email == payload.email).first()
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -139,7 +141,7 @@ def send_code(request: SendCodeRequest, db: Session = Depends(get_db)) -> SendCo
     recent = (
         db.query(VerificationCode)
         .filter(
-            VerificationCode.email == request.email,
+            VerificationCode.email == payload.email,
             VerificationCode.expires_at > now,
             VerificationCode.used == False,  # noqa: E712
         )
@@ -158,7 +160,7 @@ def send_code(request: SendCodeRequest, db: Session = Depends(get_db)) -> SendCo
     # Create new code
     code = _generate_code()
     verification = VerificationCode(
-        email=request.email,
+        email=payload.email,
         code=code,
         expires_at=now + timedelta(minutes=10),
     )
@@ -166,16 +168,17 @@ def send_code(request: SendCodeRequest, db: Session = Depends(get_db)) -> SendCo
     db.commit()
 
     # Send email
-    _send_email(request.email, code)
+    _send_email(payload.email, code)
 
     return SendCodeResponse(message="验证码已发送")
 
 
 @router.post("/register", response_model=AuthResponse)
-def register(request: RegisterRequest, db: Session = Depends(get_db)) -> AuthResponse:
+@limiter.limit("5/minute")
+def register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)) -> AuthResponse:
     now = _utc_now()
     # Check if user already exists first (before consuming the code)
-    existing_user = db.query(User).filter(User.email == request.email).first()
+    existing_user = db.query(User).filter(User.email == payload.email).first()
     if existing_user:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该邮箱已注册")
 
@@ -183,8 +186,8 @@ def register(request: RegisterRequest, db: Session = Depends(get_db)) -> AuthRes
     verification = (
         db.query(VerificationCode)
         .filter(
-            VerificationCode.email == request.email,
-            VerificationCode.code == request.code,
+            VerificationCode.email == payload.email,
+            VerificationCode.code == payload.code,
             VerificationCode.expires_at > now,
             VerificationCode.used == False,  # noqa: E712
         )
@@ -200,8 +203,8 @@ def register(request: RegisterRequest, db: Session = Depends(get_db)) -> AuthRes
 
     # Create user
     user = User(
-        email=request.email,
-        hashed_password=hash_password(request.password),
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
     )
     db.add(user)
     db.commit()
@@ -217,9 +220,10 @@ def register(request: RegisterRequest, db: Session = Depends(get_db)) -> AuthRes
 
 
 @router.post("/login", response_model=AuthResponse)
-def login(request: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
-    user = db.query(User).filter(User.email == request.email).first()
-    if user is None or not verify_password(request.password, user.hashed_password):
+@limiter.limit("10/minute")
+def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    user = db.query(User).filter(User.email == payload.email).first()
+    if user is None or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="邮箱或密码错误",

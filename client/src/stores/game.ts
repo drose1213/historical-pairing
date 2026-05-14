@@ -41,4 +41,10 @@ export const useGameStore = defineStore("game", () => {
     submitGame,
     reset,
   };
+}, {
+  persist: {
+    key: "game",
+    storage: sessionStorage,
+    paths: ["currentGame", "gameId"],
+  },
 });

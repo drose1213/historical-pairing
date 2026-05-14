@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -9,7 +10,9 @@ from .auth.deps import get_current_user, get_current_user_optional
 from .config import settings
 from .database import get_db, init_db, engine
 from .generator import generate_pairs, shuffle_items
+from .logging_config import setup_logging
 from .models import Game, GameAnswer, GamePair, SystemConfig, User
+from .rate_limit import limiter, rate_limit_exceeded_handler, RateLimitExceeded
 from .routes import admin, analytics, auth, history, leaderboard
 from .schemas import (
     CONFIG_KEY_OPENAI_API_KEY,
@@ -26,7 +29,9 @@ from .schemas import (
     SubmitResponse,
 )
 
-logging.basicConfig(level=logging.INFO)
+log_level = os.getenv("LOG_LEVEL", "INFO")
+log_file = os.getenv("LOG_FILE", None)
+setup_logging(log_level, log_file)
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
@@ -54,6 +59,8 @@ def _serialize_config(config: SystemConfig) -> ConfigItem:
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Historical Pairing API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 # CORS origins: 优先使用 CORS_ORIGINS 环境变量（逗号分隔），否则用 CLIENT_ORIGIN + localhost
 _cors_origins = (
@@ -95,7 +102,9 @@ def health() -> dict[str, str]:
 
 
 @app.post("/api/games", response_model=CreateGameResponse)
+@limiter.limit("30/minute")
 async def create_game(
+    request: Request,
     payload: CreateGameRequest,
     db: Session = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
